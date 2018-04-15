@@ -35,9 +35,17 @@ public struct Config {
   }
 
   public struct Camera {
+    public enum CameraTab {
+        case imageTab
+        case videoTab
+    }
 
     public static var recordLocation: Bool = false
 
+    public static var zoomAllowed: Bool = true
+
+    public static var maxZoomScale: CGFloat = CGFloat.greatestFiniteMagnitude
+    
     public struct ShutterButton {
       public static var numberColor: UIColor = UIColor(red: 54/255, green: 56/255, blue: 62/255, alpha: 1)
     }
@@ -52,6 +60,7 @@ public struct Config {
     
     public static var imageLimit: Int = 0
     
+    public static var tabsToShow: [CameraTab] = [.imageTab, .videoTab]
   }
 
   public struct Grid {

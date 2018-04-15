@@ -3,6 +3,9 @@ import AVFoundation
 
 protocol CameraViewDelegate: class {
   func cameraView(_ cameraView: CameraView, didTouch point: CGPoint)
+  func cameraView(_ cameraView: CameraView, didPinch pinchScale: CGFloat)
+  func cameraViewDidBeginZoom(_ cameraView: CameraView)
+  func cameraView(_ cameraView: CameraView, didSwitch tab: Config.Camera.CameraTab)
 }
 
 class CameraView: UIView, UIGestureRecognizerDelegate {
@@ -17,13 +20,19 @@ class CameraView: UIView, UIGestureRecognizerDelegate {
   lazy var doneButton: UIButton = self.makeDoneButton()
   lazy var focusImageView: UIImageView = self.makeFocusImageView()
   lazy var tapGR: UITapGestureRecognizer = self.makeTapGR()
+  lazy var pinchGR: UIPinchGestureRecognizer = self.makePinchGR()
   lazy var rotateOverlayView: UIView = self.makeRotateOverlayView()
   lazy var shutterOverlayView: UIView = self.makeShutterOverlayView()
   lazy var blurView: UIVisualEffectView = self.makeBlurView()
-
+  lazy var pageIndicator: PageIndicator = self.makePageIndicator()
+  lazy var videoTopView: UIView = self.makeVideoTopView()
+  lazy var countdowLabel: CountdownLabel = self.makeCountdowLabel()
+  lazy var videoBox: VideoBox = self.makeVideoBox()
+  
   var timer: Timer?
   var previewLayer: AVCaptureVideoPreviewLayer?
   weak var delegate: CameraViewDelegate?
+  var selectedTab: Config.Camera.CameraTab = .imageTab
 
   // MARK: - Initialization
 
@@ -42,8 +51,9 @@ class CameraView: UIView, UIGestureRecognizerDelegate {
 
   func setup() {
     addGestureRecognizer(tapGR)
+    addGestureRecognizer(pinchGR)
 
-    [closeButton, flashButton, rotateButton, bottomContainer].forEach {
+    [closeButton, flashButton, rotateButton, bottomContainer, videoTopView].forEach {
       addSubview($0)
     }
 
@@ -51,7 +61,7 @@ class CameraView: UIView, UIGestureRecognizerDelegate {
       bottomContainer.addSubview($0)
     }
 
-    [stackView, doneButton].forEach {
+    [stackView, doneButton, videoBox].forEach {
       bottomView.addSubview($0 as! UIView)
     }
 
@@ -64,6 +74,14 @@ class CameraView: UIView, UIGestureRecognizerDelegate {
     insertSubview(focusImageView, belowSubview: bottomContainer)
     insertSubview(shutterOverlayView, belowSubview: bottomContainer)
 
+    videoTopView.addSubview(countdowLabel)
+    
+    videoTopView.g_pinUpward()
+    videoTopView.g_pin(height: 44)
+    
+    countdowLabel.g_pin(on: .centerX)
+    countdowLabel.g_pin(on: .centerY)
+    
     closeButton.g_pin(on: .left)
     closeButton.g_pin(size: CGSize(width: 44, height: 44))
 
@@ -73,6 +91,17 @@ class CameraView: UIView, UIGestureRecognizerDelegate {
 
     rotateButton.g_pin(on: .right)
     rotateButton.g_pin(size: CGSize(width: 44, height: 44))
+
+    let usePageIndicator = Config.Camera.tabsToShow.count > 1
+    if usePageIndicator {
+      addSubview(pageIndicator)
+      Constraint.on(
+        pageIndicator.leftAnchor.constraint(equalTo: pageIndicator.superview!.leftAnchor),
+        pageIndicator.rightAnchor.constraint(equalTo: pageIndicator.superview!.rightAnchor),
+        pageIndicator.heightAnchor.constraint(equalToConstant: 40),
+        pageIndicator.bottomAnchor.constraint(equalTo: pageIndicator.superview!.bottomAnchor)
+      )
+    }
 
     if #available(iOS 11, *) {
       Constraint.on(
@@ -86,13 +115,23 @@ class CameraView: UIView, UIGestureRecognizerDelegate {
       )
     }
 
-    bottomContainer.g_pinDownward()
+    if(usePageIndicator){
+      bottomContainer.g_pin(on: .bottom, view: pageIndicator, on: .top)
+      bottomContainer.g_pin(on: .left)
+      bottomContainer.g_pin(on: .right)
+    } else {
+      bottomContainer.g_pinDownward()
+    }
     bottomContainer.g_pin(height: 80)
     bottomView.g_pinEdges()
-
+    
     stackView.g_pin(on: .centerY, constant: -4)
     stackView.g_pin(on: .left, constant: 38)
     stackView.g_pin(size: CGSize(width: 56, height: 56))
+
+    videoBox.g_pin(size: CGSize(width: 44, height: 44))
+    videoBox.g_pin(on: .centerY)
+    videoBox.g_pin(on: .left, constant: 38)
 
     shutterButton.g_pinCenter()
     shutterButton.g_pin(size: CGSize(width: 60, height: 60))
@@ -143,6 +182,10 @@ class CameraView: UIView, UIGestureRecognizerDelegate {
         selector: #selector(CameraView.timerFired(_:)), userInfo: nil, repeats: false)
     })
   }
+  
+  @objc func viewZoomed(pinch: UIPinchGestureRecognizer) {
+    delegate?.cameraView(self, didPinch: pinch.scale)
+  }
 
   // MARK: - Timer
 
@@ -156,10 +199,17 @@ class CameraView: UIView, UIGestureRecognizerDelegate {
 
   // MARK: - UIGestureRecognizerDelegate
   override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-    let point = gestureRecognizer.location(in: self)
+    if gestureRecognizer.isKind(of: UITapGestureRecognizer.self) {
+      let point = gestureRecognizer.location(in: self)
 
-    return point.y > closeButton.frame.maxY
-      && point.y < bottomContainer.frame.origin.y
+      return point.y > closeButton.frame.maxY
+        && point.y < bottomContainer.frame.origin.y
+    } else if gestureRecognizer.isKind(of: UIPinchGestureRecognizer.self) {
+      delegate?.cameraViewDidBeginZoom(self)
+      return true
+    }
+    
+    return false
   }
 
   // MARK: - Controls
@@ -243,6 +293,13 @@ class CameraView: UIView, UIGestureRecognizerDelegate {
 
     return gr
   }
+  
+  func makePinchGR() -> UIPinchGestureRecognizer {
+    let gr = UIPinchGestureRecognizer(target: self, action: #selector(viewZoomed(pinch:)))
+    gr.delegate = self
+    
+    return gr
+  }
 
   func makeRotateOverlayView() -> UIView {
     let view = UIView()
@@ -265,5 +322,54 @@ class CameraView: UIView, UIGestureRecognizerDelegate {
 
     return blurView
   }
+  
+  func makePageIndicator() -> PageIndicator {
+    let items = ["Gallery.Videos.Camera.Photo.Title".g_localize(fallback: "PHOTO"),
+                 "Gallery.Videos.Camera.Video.Title".g_localize(fallback: "VIDEO")]
+    let indicator = PageIndicator(items: items)
+    indicator.delegate = self
+    
+    return indicator
+  }
+  
+  func makeVideoTopView() -> UIView {
+    let view = UIView()
+    view.alpha = 0
+    view.backgroundColor = UIColor(red: 0, green: 0, blue: 0, alpha: 0.3)
+    
+    return view
+  }
+  
+  func makeCountdowLabel() -> CountdownLabel {
+    let label = CountdownLabel()
+    label.textColor = UIColor.white
+    label.font = UIFont.systemFont(ofSize: 20)
+    label.timeLimit = Config.VideoEditor.maximumDuration
+    
+    return label
+  }
+  
+  func makeVideoBox() -> VideoBox {
+    let videoBox = VideoBox()
+    videoBox.alpha = 0
+    
+    return videoBox
+  }
+}
 
+extension CameraView: PageIndicatorDelegate {
+  func pageIndicator(_ pageIndicator: PageIndicator, didSelect index: Int) {
+    selectedTab = Config.Camera.tabsToShow[index]
+    if(selectedTab == .imageTab){
+      shutterButton.switchToImage()
+      videoBox.alpha = 0
+      stackView.alpha = 1
+    } else {
+      shutterButton.switchToVideo()
+      videoBox.alpha = 1
+      stackView.alpha = 0
+    }
+    
+    delegate?.cameraView(self, didSwitch: selectedTab)
+  }
 }

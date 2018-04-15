@@ -1,5 +1,6 @@
 import UIKit
 import AVFoundation
+import AVKit
 
 class CameraController: UIViewController {
 
@@ -28,6 +29,7 @@ class CameraController: UIViewController {
 
     setup()
     setupLocation()
+    NotificationCenter.default.addObserver(self, selector: #selector(didEnterBackground), name: NSNotification.Name.UIApplicationDidEnterBackground, object: nil)
   }
 
   override func viewWillAppear(_ animated: Bool) {
@@ -39,9 +41,19 @@ class CameraController: UIViewController {
   override func viewWillDisappear(_ animated: Bool) {
     super.viewWillDisappear(animated)
 
+    if cameraMan.isVideoRecording{
+      shutterButtonTouched(cameraView.shutterButton)
+    }
+    
     locationManager?.stop()
   }
 
+  @objc fileprivate func didEnterBackground() {
+    if cameraMan.isVideoRecording{
+      shutterButtonTouched(cameraView.shutterButton)
+    }
+  }
+  
   override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
     coordinator.animate(alongsideTransition: { _ in
       if let connection = self.cameraView.previewLayer?.connection,
@@ -65,6 +77,9 @@ class CameraController: UIViewController {
     cameraView.stackView.addTarget(self, action: #selector(stackViewTouched(_:)), for: .touchUpInside)
     cameraView.shutterButton.addTarget(self, action: #selector(shutterButtonTouched(_:)), for: .touchUpInside)
     cameraView.doneButton.addTarget(self, action: #selector(doneButtonTouched(_:)), for: .touchUpInside)
+    
+    cameraView.videoBox.delegate = self
+    cameraView.countdowLabel.delegate = self
   }
 
   func setupLocation() {
@@ -104,35 +119,74 @@ class CameraController: UIViewController {
   }
 
   @objc func shutterButtonTouched(_ button: ShutterButton) {
-    guard isBelowImageLimit() else { return }
-    guard let previewLayer = cameraView.previewLayer else { return }
-
-    button.isEnabled = false
-    UIView.animate(withDuration: 0.1, animations: {
-      self.cameraView.shutterOverlayView.alpha = 1
-    }, completion: { _ in
+    if(cameraView.selectedTab == .imageTab){
+      guard isBelowImageLimit() || Config.Camera.imageLimit == 1 else { return }
+      guard let previewLayer = cameraView.previewLayer else { return }
+      
+      button.isEnabled = false
       UIView.animate(withDuration: 0.1, animations: {
-        self.cameraView.shutterOverlayView.alpha = 0
-      }) 
-    })
+        self.cameraView.shutterOverlayView.alpha = 1
+      }, completion: { _ in
+        UIView.animate(withDuration: 0.1, animations: {
+          self.cameraView.shutterOverlayView.alpha = 0
+        })
+      })
 
-    self.cameraView.stackView.startLoading()
-    cameraMan.takePhoto(previewLayer, location: locationManager?.latestLocation) { [weak self] asset in
-      guard let strongSelf = self else {
-        return
+      self.cameraView.stackView.startLoading()
+      cameraMan.takePhoto(previewLayer, location: locationManager?.latestLocation) { [weak self] asset in
+        guard let strongSelf = self else {
+          return
+        }
+
+        button.isEnabled = true
+        strongSelf.cameraView.stackView.stopLoading()
+
+        if let asset = asset {
+          if Config.Camera.imageLimit == 1 && strongSelf.cart.images.count == 1{
+            strongSelf.cart.remove(strongSelf.cart.images.first!)
+          }
+          strongSelf.cart.add(Image(asset: asset), newlyTaken: true)
+        }
       }
-
-      button.isEnabled = true
-      strongSelf.cameraView.stackView.stopLoading()
-
-      if let asset = asset {
-        strongSelf.cart.add(Image(asset: asset), newlyTaken: true)
+    } else {
+      if(cameraMan.isVideoRecording){
+        [cameraView.rotateButton, cameraView.flashButton, cameraView.closeButton].forEach {
+          $0.g_fade(visible: true)
+        }
+        cameraView.videoTopView.g_fade(visible: false)
+        cameraView.countdowLabel.reset()
+        
+        cameraView.shutterButton.stopTakingVideo(animated: true)
+        cameraMan.stopVideoRecording(location: locationManager?.latestLocation) { [weak self] asset in
+          guard let strongSelf = self else {
+            return
+          }
+          
+          button.isEnabled = true
+          
+          if let asset = asset {
+            strongSelf.cart.video = Video(asset: asset)
+            strongSelf.refreshView()
+          }
+        }
+      } else {
+        [cameraView.rotateButton, cameraView.flashButton, cameraView.closeButton].forEach {
+          $0.g_fade(visible: false)
+        }
+        cameraView.videoTopView.g_fade(visible: true)
+        cameraView.countdowLabel.start()
+        cameraView.shutterButton.startTakingVideo(animated: true)
+        cameraMan.startVideoRecording()
       }
     }
   }
-
+    
   @objc func doneButtonTouched(_ button: UIButton) {
-    EventHub.shared.doneWithImages?()
+    if(cameraView.selectedTab == .imageTab){
+      EventHub.shared.doneWithImages?()
+    } else if(cameraView.selectedTab == .videoTab){
+      EventHub.shared.doneWithVideos?()
+    }
   }
     
   fileprivate func isBelowImageLimit() -> Bool {
@@ -142,8 +196,19 @@ class CameraController: UIViewController {
   // MARK: - View
 
   func refreshView() {
-    let hasImages = !cart.images.isEmpty
-    cameraView.bottomView.g_fade(visible: hasImages)
+    if(cameraView.selectedTab == .imageTab){
+      let hasImages = !cart.images.isEmpty
+      cameraView.bottomView.g_fade(visible: hasImages)
+    } else {
+      if let capturedVideo = cart.video {
+        cameraView.videoBox.imageView.g_loadImage(capturedVideo.asset)
+      } else {
+        cameraView.videoBox.imageView.image = nil
+      }
+
+      let hasVideo = (cart.video != nil)
+      cameraView.bottomView.g_fade(visible: hasVideo)
+    }
   }
 
   // MARK: - Controls
@@ -195,6 +260,18 @@ extension CameraController: CameraViewDelegate {
   func cameraView(_ cameraView: CameraView, didTouch point: CGPoint) {
     cameraMan.focus(point)
   }
+  
+  func cameraView(_ cameraView: CameraView, didPinch pinchScale: CGFloat) {
+    cameraMan.zoom(pinchScale)
+  }
+  
+  func cameraViewDidBeginZoom(_ cameraView: CameraView) {
+    cameraMan.beginZoom()
+  }
+  
+  func cameraView(_ cameraView: CameraView, didSwitch tab: Config.Camera.CameraTab) {
+    refreshView()
+  }
 }
 
 extension CameraController: CameraManDelegate {
@@ -212,3 +289,30 @@ extension CameraController: CameraManDelegate {
   }
 
 }
+
+extension CameraController: VideoBoxDelegate {
+  
+  func videoBoxDidTap(_ videoBox: VideoBox) {
+    cart.video?.fetchPlayerItem { item in
+      guard let item = item else { return }
+      
+      DispatchQueue.main.async {
+        let controller = AVPlayerViewController()
+        let player = AVPlayer(playerItem: item)
+        controller.player = player
+        
+        self.present(controller, animated: true) {
+          player.play()
+        }
+      }
+    }
+  }
+}
+
+extension CameraController: CountdownLabelDelegate{
+  
+  func countdownLabelReachedLimit(_ countdownLabel: CountdownLabel) {
+    shutterButtonTouched(cameraView.shutterButton)
+  }
+}
+

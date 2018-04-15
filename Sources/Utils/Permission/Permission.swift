@@ -36,6 +36,10 @@ struct Permission {
     static var needsPermission: Bool {
       return Config.tabsToShow.index(of: .cameraTab) != nil
     }
+    
+    static var needsMicrophonePermission: Bool {
+      return Config.Camera.tabsToShow.index(of: .videoTab) != nil
+    }
 
     static var status: Status {
       switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -49,10 +53,29 @@ struct Permission {
         return .authorized
       }
     }
+    
+    static var microphoneStatus: Status {
+      switch AVCaptureDevice.authorizationStatus(for: .audio) {
+      case .notDetermined:
+        return .notDetermined
+      case .restricted:
+        return .restricted
+      case .denied:
+        return .denied
+      case .authorized:
+        return .authorized
+      }
+    }
 
     static func request(_ completion: @escaping () -> Void) {
       AVCaptureDevice.requestAccess(for: .video) { granted in
-        completion()
+        if needsMicrophonePermission {
+          AVCaptureDevice.requestAccess(for: .audio) { granted in
+            completion()
+          }
+        } else {
+          completion()
+        }
       }
     }
   }
